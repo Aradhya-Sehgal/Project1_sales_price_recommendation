@@ -134,5 +134,3 @@ else:
 st.write(f"Base Product Price: {base_price:.2f}")
 st.write(f"Adjusted Product Price: {adjusted_price:.2f}")
 
-
-this code
