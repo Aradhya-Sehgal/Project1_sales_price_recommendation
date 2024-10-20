@@ -1,12 +1,9 @@
-# streamlit_app.py
-
 import streamlit as st
 import numpy as np
 import pandas as pd
+import joblib
 from scipy.sparse import csr_matrix, hstack
 import lightgbm as lgb
-from sklearn.ensemble import RandomForestRegressor
-import joblib
 
 # Load Trained Models
 @st.cache_resource
@@ -38,7 +35,7 @@ day = st.number_input("Day", value=30)
 month = st.number_input("Month", value=1)
 year = st.number_input("Year", value=2015)
 
-# Step 3: Prepare Store Features DataFrame
+# Prepare Store Features DataFrame
 store_df = pd.DataFrame({
     'Store': [store],
     'Customers': [customers],
@@ -48,33 +45,47 @@ store_df = pd.DataFrame({
     'StateHoliday': [state_holiday],
     'StoreType': [store_type],
     'Assortment': [assortment],
-    'DayOfWeek': [day_of_week],
-    'Week': [week],
-    'Day': [day],
-    'Month': [month],
-    'Year': [year],
     'AvgSales': [5919],
     'AvgCustomers': [624],
     'AvgSalesPerCustomer': [9.49],
     'MedSales': [5919],
     'MedCustomers': [624],
     'MedSalesPerCustomer': [9.49],
+    'DayOfWeek': [day_of_week],
+    'Week': [week],
+    'Day': [day],
+    'Month': [month],
+    'Year': [year],
     'CompetitionOpenSinceMonth': [11],
     'CompetitionOpenSinceYear': [2007],
     'Promo2SinceWeek': [13],
     'Promo2SinceYear': [2010]
 })
 
-# Predict store sales
-predicted_store_sales = sales_model.predict(store_df)[0]
-st.write(f"Predicted Store Sales: {predicted_store_sales}")
+# Convert relevant columns to categorical types
+store_df['StateHoliday'] = store_df['StateHoliday'].astype('category')
+store_df['StoreType'] = store_df['StoreType'].astype('category')
+store_df['Assortment'] = store_df['Assortment'].astype('category')
 
-# Step 4: Product Features Input
+# Debugging outputs
+st.write("Store DataFrame:")
+st.write(store_df)
+
+# Predict store sales
+try:
+    predicted_store_sales = sales_model.predict(store_df)[0]
+    st.write(f"Predicted Store Sales: {predicted_store_sales:.2f}")
+except ValueError as e:
+    st.error(f"Prediction error: {e}")
+except AttributeError as e:
+    st.error(f"Attribute error: {e}")
+
+# Step 4: Get user input for Product Features
 st.subheader("Product Features")
 product_name = st.text_input("Product Name", "Vintage Designer Bag")
-item_condition_id = st.selectbox("Item Condition", [1, 2, 3, 4, 5], index=2)
-category_name = st.text_input("Category", "Women/Bags/Handbags")
-brand_name = st.text_input("Brand", "Gucci")
+item_condition_id = st.selectbox("Item Condition ID", [1, 2, 3, 4, 5], index=2)
+category_name = st.text_input("Category Name", "Women/Bags/Handbags")
+brand_name = st.text_input("Brand Name", "Gucci")
 shipping = st.selectbox("Shipping", [0, 1], index=1)
 item_description = st.text_area("Item Description", "A luxury handbag in great condition")
 
@@ -88,8 +99,13 @@ product_df = pd.DataFrame({
     'item_description': [item_description]
 })
 
-# Preprocess and Vectorize
+# Function to handle missing values
 def handle_missing_inplace(dataset):
+    # Convert 'category_name' to categorical type if it's not already
+    if not pd.api.types.is_categorical_dtype(dataset['category_name']):
+        dataset['category_name'] = dataset['category_name'].astype('category')
+
+    # Check if 'missing' category exists before adding
     if 'missing' not in dataset['category_name'].cat.categories:
         dataset['category_name'] = dataset['category_name'].cat.add_categories('missing')
     dataset['category_name'].fillna(value='missing', inplace=True)
@@ -97,40 +113,51 @@ def handle_missing_inplace(dataset):
     dataset['item_description'].replace('No description yet', 'missing', inplace=True)
     dataset['item_description'].fillna(value='missing', inplace=True)
 
+# Function to convert columns to categorical
 def to_categorical(dataset):
     dataset['category_name'] = dataset['category_name'].astype('category')
     dataset['brand_name'] = dataset['brand_name'].astype('category')
     dataset['item_condition_id'] = dataset['item_condition_id'].astype('category')
 
+# Apply preprocessing to the product data
 handle_missing_inplace(product_df)
 to_categorical(product_df)
 
+# Vectorize the features using the loaded vectorizers
 X_name_input = cv.transform(product_df['name'])
 X_category_input = cv.transform(product_df['category_name'])
 X_description_input = tv.transform(product_df['item_description'])
 X_brand_input = lb.transform(product_df['brand_name'])
 X_dummies_input = csr_matrix(pd.get_dummies(product_df[['item_condition_id', 'shipping']], sparse=True).values)
 
+# Create a sparse matrix for the input data
 sparse_input = hstack((X_dummies_input, X_description_input, X_brand_input, X_category_input, X_name_input)).tocsr()
 
-# Predict price
-predicted_price = price_model.predict(sparse_input, num_iteration=price_model.best_iteration, predict_disable_shape_check=True)
-base_price = np.expm1(predicted_price)[0]
+# Step 5: Predict Base Price Using Price Recommendation Model
+try:
+    predicted_price = price_model.predict(sparse_input, num_iteration=price_model.best_iteration, predict_disable_shape_check=True)
+    
+    # If the model was trained on log-transformed prices, apply exponential transformation to get the actual price
+    base_price = np.expm1(predicted_price)[0]
+    st.write(f"Base Product Price: {base_price:.2f}")
 
-# Adjusted Price based on store sales performance
-if predicted_store_sales > 20000:
-    adjusted_price = base_price * 1.25
-elif 15000 < predicted_store_sales <= 20000:
-    adjusted_price = base_price * 1.15
-elif 10000 < predicted_store_sales <= 15000:
-    adjusted_price = base_price * 1.05
-elif 7000 < predicted_store_sales <= 10000:
-    adjusted_price = base_price
-elif 4000 < predicted_store_sales <= 7000:
-    adjusted_price = base_price * 0.90
-else:
-    adjusted_price = base_price * 0.80
+    # Step 6: Apply Decision Layer for Price Adjustment
+    # Define thresholds for store sales performance
+    if predicted_store_sales > 20000:  # Very high sales threshold
+        adjusted_price = base_price * 1.25  # Increase price by 25%
+    elif 15000 < predicted_store_sales <= 20000:  # High sales threshold
+        adjusted_price = base_price * 1.15  # Increase price by 15%
+    elif 10000 < predicted_store_sales <= 15000:  # Moderate sales threshold
+        adjusted_price = base_price * 1.05  # Increase price by 5%
+    elif 7000 < predicted_store_sales <= 10000:  # Average sales threshold
+        adjusted_price = base_price  # Keep the base price
+    elif 4000 < predicted_store_sales <= 7000:  # Low sales threshold
+        adjusted_price = base_price * 0.90  # Decrease price by 10%
+    else:  # Very low sales threshold
+        adjusted_price = base_price * 0.80  # Decrease price by 20%
 
-st.write(f"Base Product Price: {base_price:.2f}")
-st.write(f"Adjusted Product Price: {adjusted_price:.2f}")
+    # Step 7: Output the Results
+    st.write(f"Adjusted Product Price: {adjusted_price:.2f}")
 
+except Exception as e:
+    st.error(f"Error in price prediction: {e}")
